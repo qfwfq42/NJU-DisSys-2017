@@ -18,6 +18,8 @@ package raft
 //
 
 import (
+	"bytes"
+	"encoding/gob"
 	"labrpc"
 	"math/rand"
 	"sync"
@@ -115,12 +117,15 @@ func (rf *Raft) GetState() (int, bool) {
 func (rf *Raft) persist() {
 	// Your code here.
 	// Example:
-	// w := new(bytes.Buffer)
-	// e := gob.NewEncoder(w)
-	// e.Encode(rf.xxx)
-	// e.Encode(rf.yyy)
-	// data := w.Bytes()
-	// rf.persister.SaveRaftState(data)
+	w := new(bytes.Buffer)
+	e := gob.NewEncoder(w)
+	e.Encode(rf.Log)
+	e.Encode(rf.VotedFor)
+	e.Encode(rf.CurrentTerm)
+	//e.Encode(rf.CommitIndex)
+	//e.Encode(rf.LastApplied)
+	data := w.Bytes()
+	rf.persister.SaveRaftState(data)
 }
 
 //
@@ -129,10 +134,13 @@ func (rf *Raft) persist() {
 func (rf *Raft) readPersist(data []byte) {
 	// Your code here.
 	// Example:
-	// r := bytes.NewBuffer(data)
-	// d := gob.NewDecoder(r)
-	// d.Decode(&rf.xxx)
-	// d.Decode(&rf.yyy)
+	r := bytes.NewBuffer(data)
+	d := gob.NewDecoder(r)
+	d.Decode(&rf.Log)
+	d.Decode(&rf.VotedFor)
+	d.Decode(&rf.CurrentTerm)
+	//d.Decode(&rf.CommitIndex)
+	//d.Decode(&rf.LastApplied)
 }
 
 //AppendEntriesArgs RPC arguments structure.
@@ -197,6 +205,7 @@ func (rf *Raft) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesReply)
 		reply.Success = false
 	}
 	reply.Term = rf.CurrentTerm
+	rf.persist()
 }
 
 func (rf *Raft) SendAppendEntries(server int, args AppendEntriesArgs, reply *AppendEntriesReply) bool {
@@ -327,6 +336,7 @@ func (rf *Raft) RequestVote(args RequestVoteArgs, reply *RequestVoteReply) {
 		reply.VoteGranted = false
 		reply.Term = rf.CurrentTerm
 	}
+	rf.persist()
 }
 
 //
@@ -553,9 +563,10 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.NextIndex = make(map[int]int)
 	rf.MatchIndex = make(map[int]int)
 	//initialize from state persisted before a crash
-	//rf.readPersist(persister.ReadRaftState())
+	rf.readPersist(persister.ReadRaftState())
 	//fmt.Printf("[Make]no:%d\n", rf.me)
 	go rf.TransToFollower(rf.CurrentTerm)
+
 	go rf.ApplyShSender()
 	return rf
 }
@@ -565,6 +576,7 @@ func (rf *Raft) ApplyShSender() {
 		//fmt.Printf("[applyShSender]%+v\n", *rf)
 		bufferLastApplied := rf.LastApplied
 		var entries []LogEntry //to be applied
+		rf.persist()
 		//if commitIndex > lastApplied,then incremente lA & apply log[lA]
 		if rf.CommitIndex > rf.LastApplied {
 			entries = rf.Log[rf.LastApplied+1 : rf.CommitIndex+1]
