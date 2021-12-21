@@ -82,6 +82,7 @@ type Raft struct {
 	CommitChan chan struct{}
 }
 
+//There is no Min() in Go :(
 func Min(x int, y int) int {
 	if x < y {
 		return x
@@ -122,8 +123,6 @@ func (rf *Raft) persist() {
 	e.Encode(rf.Log)
 	e.Encode(rf.VotedFor)
 	e.Encode(rf.CurrentTerm)
-	//e.Encode(rf.CommitIndex)
-	//e.Encode(rf.LastApplied)
 	data := w.Bytes()
 	rf.persister.SaveRaftState(data)
 }
@@ -139,8 +138,6 @@ func (rf *Raft) readPersist(data []byte) {
 	d.Decode(&rf.Log)
 	d.Decode(&rf.VotedFor)
 	d.Decode(&rf.CurrentTerm)
-	//d.Decode(&rf.CommitIndex)
-	//d.Decode(&rf.LastApplied)
 }
 
 //AppendEntriesArgs RPC arguments structure.
@@ -177,12 +174,6 @@ func (rf *Raft) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesReply)
 			reply.Success = true
 			insertIndex := args.PrevLogIndex + 1
 			newEntryIndex := 0
-			/*
-				for (insertIndex >= len(rf.Log) || newEntryIndex >= len(args.Entries)) && rf.Log[insertIndex].Term != args.Entries[newEntryIndex].Term {
-					insertIndex += 1
-					newEntryIndex += 1
-				}
-			*/
 			for {
 				if insertIndex >= len(rf.Log) || newEntryIndex >= len(args.Entries) {
 					break
@@ -320,7 +311,6 @@ func (rf *Raft) RequestVote(args RequestVoteArgs, reply *RequestVoteReply) {
 	//fmt.Printf("thisID:%d targetsID:%d targetTerm:%d\n", args.CandidateId, rf.me, rf.CurrentTerm)
 	if args.Term > rf.CurrentTerm {
 		//fmt.Printf("[x]%d %d \n", args.CandidateId, rf.VotedFor)
-		//fmt.Printf("2thisID:%d targetsID:%d targetTerm:%d\n", args.CandidateId, rf.me, rf.CurrentTerm)
 		rf.TransToFollower(args.Term)
 	}
 	//fmt.Printf("[request] %d, %d \n", rf.CurrentTerm, rf.VotedFor)
@@ -449,14 +439,6 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 // turn off debug output from this instance.
 //
 func (rf *Raft) Kill() {
-	// Your code here, if desired.
-}
-
-func (rf *Raft) FollowerAction() {
-	// Your code here, if desired.
-}
-
-func (rf *Raft) CandidateAction() {
 	// Your code here, if desired.
 }
 
