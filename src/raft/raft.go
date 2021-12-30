@@ -154,6 +154,10 @@ type AppendEntriesArgs struct {
 type AppendEntriesReply struct {
 	Term    int //currentTerm, for leader to update itself
 	Success bool
+
+	//Faster when handling conflicts
+	ConflictIndex int
+	ConflictTerm  int
 }
 
 //AppendEntries RPC handler.
@@ -191,6 +195,20 @@ func (rf *Raft) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesReply)
 				rf.CommitIndex = Min(args.LeaderCommit, len(rf.Log)-1)
 				rf.CommitChan <- struct{}{}
 			}
+		} else {
+			if args.PrevLogIndex >= len(rf.Log) {
+				reply.ConflictIndex = len(rf.Log)
+				reply.ConflictTerm = -1
+			} else {
+				reply.ConflictTerm = rf.Log[args.PrevLogIndex].Term
+				var indexi int
+				for indexi = args.PrevLogIndex - 1; indexi >= 0; indexi-- {
+					if rf.Log[indexi].Term != reply.ConflictTerm {
+						break
+					}
+				}
+				reply.ConflictIndex = indexi + 1
+			}
 		}
 	} else {
 		reply.Success = false
@@ -216,6 +234,7 @@ func (rf *Raft) BroadcastAppendEntries() {
 			continue
 		}
 		go func(i int) {
+			rf.mu.Lock()
 			nextIndex_i := rf.NextIndex[i]
 			entries := rf.Log[nextIndex_i:]
 			prevLogIndex := nextIndex_i - 1
@@ -233,6 +252,7 @@ func (rf *Raft) BroadcastAppendEntries() {
 			args.PrevLogIndex = prevLogIndex
 			args.LeaderCommit = rf.CommitIndex
 			args.Entries = entries
+			rf.mu.Unlock()
 			//fmt.Printf("[args]%+v\n", *args)
 			reply := new(AppendEntriesReply)
 			rf.SendAppendEntries(i, *args, reply)
@@ -270,7 +290,23 @@ func (rf *Raft) BroadcastAppendEntries() {
 						rf.CommitChan <- struct{}{}
 					}
 				} else {
-					rf.NextIndex[i] = nextIndex_i - 1
+					if reply.ConflictIndex >= 0 {
+						lastIndex := -1
+						for i := len(rf.Log) - 1; i >= 0; i-- {
+							if rf.Log[i].Term == reply.ConflictTerm {
+								lastIndex = i
+								break
+							}
+						}
+						if lastIndex >= 0 {
+							rf.NextIndex[i] = lastIndex + 1
+						} else {
+							rf.NextIndex[i] = reply.ConflictIndex
+						}
+					} else {
+						rf.NextIndex[i] = reply.ConflictIndex
+					}
+					//rf.NextIndex[i] = nextIndex_i - 1
 				}
 			}
 		}(i)
@@ -308,15 +344,11 @@ func (rf *Raft) RequestVote(args RequestVoteArgs, reply *RequestVoteReply) {
 	} else {
 		bufferLastLogTerm = -1
 	}
-	//fmt.Printf("thisID:%d targetsID:%d targetTerm:%d\n", args.CandidateId, rf.me, rf.CurrentTerm)
 	if args.Term > rf.CurrentTerm {
-		//fmt.Printf("[x]%d %d \n", args.CandidateId, rf.VotedFor)
 		rf.TransToFollower(args.Term)
 	}
-	//fmt.Printf("[request] %d, %d \n", rf.CurrentTerm, rf.VotedFor)
 	if args.Term == rf.CurrentTerm && (rf.VotedFor == -1 || rf.VotedFor == args.CandidateId) &&
 		(args.LastLogTerm > bufferLastLogTerm || (args.LastLogTerm == bufferLastLogTerm && args.LastLogIndex >= bufferLastLogIndex)) {
-		//fmt.Printf("[y]%d %d \n", args.CandidateId, rf.VotedFor)
 		rf.ResetElectionTimer()
 		rf.VotedFor = args.CandidateId
 		reply.VoteGranted = true
@@ -417,7 +449,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	term := -1
 	isLeader := true
 	rf.mu.Lock()
-	defer rf.mu.Unlock()
+
 	if rf.State == roleLeader {
 		//index = rf.NextIndex[rf.me]
 		term = rf.CurrentTerm
@@ -425,9 +457,11 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 		//fmt.Printf("\nNOWINDEX: %d\n\n", index)
 		rf.Log = append(rf.Log, LogEntry{term, command})
 		rf.persist()
-		//rf.BroadcastAppendEntries()
+		rf.mu.Unlock()
+		rf.BroadcastAppendEntries()
 	} else {
 		isLeader = false
+		rf.mu.Unlock()
 	}
 	return index, term, isLeader
 }
@@ -556,14 +590,16 @@ func Make(peers []*labrpc.ClientEnd, me int,
 func (rf *Raft) ApplyShSender() {
 	for range rf.CommitChan {
 		//fmt.Printf("[applyShSender]%+v\n", *rf)
+		rf.mu.Lock()
 		bufferLastApplied := rf.LastApplied
 		var entries []LogEntry //to be applied
-		rf.persist()
+		//rf.persist()
 		//if commitIndex > lastApplied,then incremente lA & apply log[lA]
 		if rf.CommitIndex > rf.LastApplied {
 			entries = rf.Log[rf.LastApplied+1 : rf.CommitIndex+1]
 			rf.LastApplied = rf.CommitIndex
 		}
+		rf.mu.Unlock()
 		//apply to state machine
 		for i, entry := range entries {
 			rf.ApplyCh <- ApplyMsg{
